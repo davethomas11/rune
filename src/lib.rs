@@ -3,3 +3,4 @@ pub mod runtime;
 pub mod rune_ast;
 pub mod util;
 pub mod builtins;
+pub mod cli;

@@ -1,10 +1,12 @@
 // src/main.rs
 mod builtins;
+mod cli;
 mod rune_ast;
 mod rune_parser;
 mod runtime;
 mod util;
 
+use crate::rune_ast::{RuneDocument, Value};
 use crate::rune_parser::parse_rune;
 use crate::runtime::{build_router, get_app_type};
 use crate::util::{api_doc, json_to_xml};
@@ -19,19 +21,27 @@ async fn main() -> anyhow::Result<()> {
     let matches = Command::new("vectrune")
         .version("0.1.0")
         .author("David Thomas")
-        .about("VectRune script executor")
+        .about("Vectrune: Structured data in motion.")
         .arg(
             Arg::new("SCRIPT")
-                .help("Path to the .rune script")
+                .help("Path to the .rune script, or '-' to read from STDIN")
                 .required(true)
                 .index(1),
+        )
+        .arg(
+            Arg::new("input")
+                .short('i')
+                .long("input")
+                .help("Input data type")
+                .value_name("input_format")
+                .value_parser(["json", "rune", "xml", "yaml"]),
         )
         .arg(
             Arg::new("output")
                 .short('o')
                 .long("output")
                 .help("Enable verbose output")
-                .value_name("format")
+                .value_name("output_format")
                 .value_parser(["text", "json", "rune", "xml", "yaml"]),
         )
         .arg(
@@ -41,30 +51,111 @@ async fn main() -> anyhow::Result<()> {
                 .help("Enable verbose output")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("calculate")
+                .long("calculate")
+                .num_args(1)
+                .value_name("EXPR")
+                .help("Perform a calculation over data, e.g. 'avg Section.field'"),
+        )
+        .arg(
+            Arg::new("transform")
+                .long("transform")
+                .num_args(1)
+                .value_name("SPEC")
+                .help("Transform data into a new document, e.g. '@Target key:[@Section.field]'"),
+        )
         .get_matches();
 
     let script_path = matches.get_one::<String>("SCRIPT").unwrap();
     let output_format = matches.get_one::<String>("output").map(|s| s.as_str());
+    let input_format = matches.get_one::<String>("input").map(|s| s.as_str());
     let is_verbose = matches.get_flag("verbose");
+    let calc_expr = matches.get_one::<String>("calculate").map(|s| s.as_str());
+    let transform_spec = matches.get_one::<String>("transform").map(|s| s.as_str());
 
-    let script_content = fs::read_to_string(script_path).unwrap_or_else(|err| {
-        eprintln!("Error reading script: {}", err);
-        process::exit(1);
-    });
-
-    let doc = match parse_rune(&script_content) {
-        Ok(doc) => doc,
-        Err(err) => {
-            eprintln!("Error parsing RUNE script: {}", err);
+    let script_content = if script_path == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .unwrap_or_else(|err| {
+                eprintln!("Error reading script from STDIN: {}", err);
+                process::exit(1);
+            });
+        buf
+    } else {
+        fs::read_to_string(script_path).unwrap_or_else(|err| {
+            eprintln!("Error reading script: {}", err);
             process::exit(1);
+        })
+    };
+
+    let mut doc: RuneDocument = match input_format {
+        Some("json") => {
+            // Convert JSON input to Rune format
+            let json_value: serde_json::Value = serde_json::from_str(&script_content).unwrap_or_else(|err| {
+                eprintln!("Error parsing JSON input: {}", err);
+                process::exit(1);
+            });
+            RuneDocument::from_json(&json_value)
+        }
+        Some("xml") => {
+            // Convert XML input to Rune format
+            // Here you would implement conversion from XML to Rune script format
+            eprintln!("XML input format is not yet implemented.");
+            process::exit(1);
+        }
+        Some("yaml") => {
+            // Convert YAML input to Rune format
+            let yaml_value: serde_yaml::Value = serde_yaml::from_str(&script_content).unwrap_or_else(|err| {
+                eprintln!("Error parsing YAML input: {}", err);
+                process::exit(1);
+            });
+            // Here you would implement conversion from YAML to Rune script format
+            eprintln!("YAML input format is not yet implemented.");
+            process::exit(1);
+        }
+        _ => {
+            match parse_rune(&script_content) {
+                Ok(doc) => doc,
+                Err(err) => {
+                    eprintln!("Error parsing Vectrune script: {}", err);
+                    process::exit(1);
+                }
+            }
         }
     };
 
+    // Calculation mode
+    if let Some(expr) = calc_expr {
+        if let Err(e) = crate::cli::handle_calculate(&doc, expr) {
+            eprintln!("{}", e);
+            process::exit(1);
+        }
+        process::exit(0);
+    }
+
+    // Transform mode
+    if let Some(spec) = transform_spec {
+        match crate::cli::handle_transform(&doc, spec) {
+            Ok(new_doc) => {
+                doc.update_from(&new_doc);
+            }
+            Err(e) => {
+                eprintln!("Transform error: {}", e);
+                process::exit(1);
+            }
+        }
+    }
+
     let app_type = get_app_type(&doc);
-    println!("Detected App type: {:?}", app_type);
+    if is_verbose {
+        println!("Detected App type: {:?}", app_type);
+    }
 
     if app_type == Some("REST".to_string()) && output_format == None {
-        println!("Starting RUNE REST application...");
+        println!("Starting Vectrune REST application...");
         println!("Press Ctrl+C to stop the server.");
         if is_verbose {
             println!("Config: \n{}", api_doc(&doc));
@@ -77,11 +168,13 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(3000);
         let host_address = format!("127.0.0.1:{}", port);
         let listener = TcpListener::bind(host_address.clone()).await?;
-        println!("RUNE runtime listening on http://{}", host_address);
+        println!("Vectrune runtime listening on http://{}", host_address);
         serve(listener, app).await?;
         Ok(())
     } else {
-        println!("Parsed RUNE script:");
+        if is_verbose {
+            println!("Parsed Vectrune script:");
+        }
         match output_format {
             Some("json") => {
                 let json_output =
@@ -98,8 +191,8 @@ async fn main() -> anyhow::Result<()> {
                 process::exit(0);
             }
             Some("rune") => {
-                // For RUNE output, we can just print the original script content
-                println!("{}", script_content);
+                // For Vectrune output, we can just print the original script content
+                println!("{}", doc);
                 process::exit(0);
             }
             Some("xml") => {
@@ -108,11 +201,10 @@ async fn main() -> anyhow::Result<()> {
                 process::exit(0);
             }
             Some("yaml") => {
-                let yaml_output =
-                    serde_yaml::to_string(&doc.to_json()).unwrap_or_else(|err| {
-                        eprintln!("Error converting to YAML: {}", err);
-                        process::exit(1);
-                    });
+                let yaml_output = serde_yaml::to_string(&doc.to_json()).unwrap_or_else(|err| {
+                    eprintln!("Error converting to YAML: {}", err);
+                    process::exit(1);
+                });
                 println!("{}", yaml_output);
                 process::exit(0);
             }

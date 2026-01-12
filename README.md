@@ -74,7 +74,19 @@ There are sample Vectrune scripts in "examples/":
 - examples/app.rune
 - examples/user_api.rune
 
-How to run the binary depends on your local workflow; if you’d like a dedicated CLI entrypoint for executing Vectrune scripts, open an issue or ask for a helper command and we’ll add it. For now, this repository focuses on the runtime and tests.
+You can run scripts with the `vectrune` CLI. Pass a file path, or use `-` to read the script from STDIN:
+
+    # From a file
+    vectrune examples/user_api.rune
+
+    # From STDIN
+    cat examples/user_api.rune | vectrune -
+
+    # Calculate over data
+    vectrune examples/skateboarders.rune --calculate "avg Skateboarder.age"
+
+    # Transform data into a new document
+    vectrune examples/skateboarders.rune --transform "@Skaters name:[@Skateboarder.name]"
 
 Tests
 -----
