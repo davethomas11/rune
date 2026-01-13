@@ -6,7 +6,7 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub doc: Arc<RuneDocument>,
     pub schemas: Arc<HashMap<String, Section>>, // For @Schema
+    pub data_sources: Arc<HashMap<String, Section>>, // For @Datasource
 }
 
 pub fn get_app_type(doc: &RuneDocument) -> Option<String> {
@@ -39,11 +40,25 @@ fn extract_schemas(doc: &RuneDocument) -> HashMap<String, Section> {
     schemas
 }
 
+fn extract_data_sources(doc: &RuneDocument) -> HashMap<String, Section> {
+    let mut data_sources = HashMap::new();
+    for section in &doc.sections {
+        if section.path.first().map(|s| s.as_str()) == Some("Datasource") {
+            if let Some(name) = section.path.get(1) {
+                data_sources.insert(name.clone(), section.clone());
+            }
+        }
+    }
+    data_sources
+}
+
 pub fn build_router(doc: RuneDocument, verbose: bool) -> Router {
     let schemas = Arc::new(extract_schemas(&doc));
+    let datasources = Arc::new(extract_data_sources(&doc)); // Placeholder for datasources
     let state = AppState {
         doc: Arc::new(doc),
         schemas,
+        data_sources,
     };
     let mut router = Router::new();
 
@@ -53,6 +68,7 @@ pub fn build_router(doc: RuneDocument, verbose: bool) -> Router {
                 continue;
             }
             let method = section.path.get(1).map(|s| s.as_str()).unwrap_or("GET");
+            let method = method.to_uppercase();
             let path_template = section
                 .path
                 .iter()
@@ -62,18 +78,34 @@ pub fn build_router(doc: RuneDocument, verbose: bool) -> Router {
                 .join("/");
             let path_template = format!("/{}", path_template);
             let axum_path = path_template.replace("{", ":").replace("}", "");
-            let run_steps = section.series.get("run").cloned().unwrap_or_default();
+            let default_step = vec![Value::String("respond 200 OK".to_string())];
+
             let state_clone = state.clone();
+            let run_steps = section.series.get("run").cloned().unwrap_or(default_step);
+            let handler = create_handler(state_clone.clone(), run_steps.clone(), verbose);
 
-            let handler =
-                move |axum::extract::Path(params): axum::extract::Path<HashMap<String, String>>,
-                      body: Option<String>| {
-                    let state = state_clone.clone();
-                    let steps = run_steps.clone();
-                    async move { execute_steps(state, steps, body, Some(params), verbose).await }
-                };
+            if method == "CRUD" {
+                for m in &["GET", "POST", "PUT", "DELETE"] {
+                    let run_steps = crate::builtins::builtin::data_source::get_data_source_commands(
+                        m,
+                        section.clone(),
+                        &state.schemas,
+                        &state.data_sources,
+                    );
+                    let handler = create_handler(state_clone.clone(), run_steps.clone(), verbose);
+                    let route_fn = match *m {
+                        "GET" => get(move |params| handler(params, None)),
+                        "POST" => post(move |params, body| handler(params, Some(body))),
+                        "PUT" => put(move |params, body| handler(params, Some(body))),
+                        "DELETE" => delete(move |params| handler(params, None)),
+                        _ => unreachable!(),
+                    };
+                    router = router.route(&axum_path, route_fn);
+                }
+                continue;
+            }
 
-            let method = method.to_uppercase();
+
             let route_fn = match method.as_str() {
                 "GET" | "DELETE" => {
                     let handler = handler.clone();
@@ -92,6 +124,9 @@ pub fn build_router(doc: RuneDocument, verbose: bool) -> Router {
                     }
                 }
                 _ => {
+                    if verbose {
+                        eprintln!("[WARN] Unsupported HTTP method: {}", method);
+                    }
                     // Fallback for unsupported methods
                     continue;
                 }
@@ -102,6 +137,18 @@ pub fn build_router(doc: RuneDocument, verbose: bool) -> Router {
     }
 
     router.with_state(state)
+}
+
+fn create_handler(
+    state: AppState,
+    steps: Vec<Value>,
+    verbose: bool,
+) -> impl Fn(axum::extract::Path<HashMap<String, String>>, Option<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = (StatusCode, String)> + Send>> + Clone {
+    move |axum::extract::Path(params): axum::extract::Path<HashMap<String, String>>, body: Option<String>| {
+        let state = state.clone();
+        let steps = steps.clone();
+        Box::pin(async move { execute_steps(state, steps, body, Some(params), verbose).await })
+    }
 }
 
 // Helper to resolve simple literals and dotted paths in context
@@ -242,7 +289,7 @@ fn execute_steps_inner(
                     let name = &parts[0];
                     let args = &parts[1..];
                     if verbose { println!("[DEBUG] Executing: {} = {} {:?}", var, name, args); }
-                    let res = call_builtin(name, args, ctx, state.schemas.clone(), Some(var));
+                    let res = call_builtin(name, args, ctx, state.schemas.clone(), Some(var), state.data_sources.clone());
                     if verbose { println!("[DEBUG] Result: {:?}", res); }
                     match res {
                         BuiltinResult::Ok => {}
@@ -255,7 +302,7 @@ fn execute_steps_inner(
                     let name = &parts[0];
                     let args = &parts[1..];
                     if verbose { println!("[DEBUG] Executing: {} {:?}", name, args); }
-                    let res = call_builtin(name, args, ctx, state.schemas.clone(), None);
+                    let res = call_builtin(name, args, ctx, state.schemas.clone(), None, state.data_sources.clone());
                     match res {
                         BuiltinResult::Ok => {}
                         BuiltinResult::Respond(code, msg) => { last_response = Some((code, msg)); break; }

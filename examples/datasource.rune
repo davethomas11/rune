@@ -1,0 +1,29 @@
+#!RUNE
+
+@App
+name = Example API with Data Source
+type = REST
+version = 1.0
+
+@Authentication
+name = JWTAuth
+type = jwt
+secret = $jwt_secret$
+
+@DataSource/CatsDataSource
+type = postgres
+connection = $connection_string$
+
+@Schema/Cat
+name = string
+weight = number
+neutered = bool
+family = string
+sub_family = string
+genera = string
+species = string
+
+@Route/CRUD /cats
+data_source = CatsDataSource
+authentication = JWTAuth
+schema = Cat

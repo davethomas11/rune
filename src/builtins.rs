@@ -11,6 +11,7 @@ mod builtin {
     pub mod parse_json;
     pub mod validate;
     pub mod csv;
+    pub mod data_source;
 }
 
 use builtin::log::builtin_log;
@@ -18,6 +19,7 @@ use builtin::respond::builtin_respond;
 use builtin::parse_json::builtin_parse_json;
 use builtin::validate::builtin_validate;
 use builtin::csv::{builtin_csv_read, builtin_csv_write, builtin_csv_append};
+use builtin::data_source::builtin_data_source;
 
 pub type Context = HashMap<String, JsonValue>;
 
@@ -39,6 +41,7 @@ pub fn call_builtin(
     ctx: &mut Context,
     schemas: Arc<HashMap<String, Section>>,
     assign_to: Option<&str>,
+    data_sources: Arc<HashMap<String, Section>>,
 ) -> BuiltinResult {
     // Preprocess args: combine quoted strings and remove surrounding quotes
     let mut processed_args = Vec::new();
@@ -274,6 +277,7 @@ pub fn call_builtin(
         "csv.read" => builtin_csv_read(args, ctx, assign_to),
         "csv.write" => builtin_csv_write(args, ctx),
         "csv.append" => builtin_csv_append(args, ctx),
+        "datasource" => builtin_data_source(args, ctx, &schemas, assign_to, &data_sources),
         _ => {
             eprintln!("[WARN] unknown builtin: {}", name);
             BuiltinResult::Ok
