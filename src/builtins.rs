@@ -2,16 +2,15 @@
 
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::sync::Arc;
-use crate::rune_ast::Section;
 
-mod builtin {
+pub mod builtin {
     pub mod log;
     pub mod respond;
     pub mod parse_json;
     pub mod validate;
     pub mod csv;
     pub mod data_source;
+    pub mod postgres;
 }
 
 use builtin::log::builtin_log;
@@ -20,6 +19,7 @@ use builtin::parse_json::builtin_parse_json;
 use builtin::validate::builtin_validate;
 use builtin::csv::{builtin_csv_read, builtin_csv_write, builtin_csv_append};
 use builtin::data_source::builtin_data_source;
+use crate::runtime::AppState;
 
 pub type Context = HashMap<String, JsonValue>;
 
@@ -35,13 +35,12 @@ pub enum BuiltinResult {
 
 
 // --- Main dispatcher ---
-pub fn call_builtin(
+pub async fn call_builtin(
     name: &str,
     args: &[String],
     ctx: &mut Context,
-    schemas: Arc<HashMap<String, Section>>,
+    app_state: &AppState,
     assign_to: Option<&str>,
-    data_sources: Arc<HashMap<String, Section>>,
 ) -> BuiltinResult {
     // Preprocess args: combine quoted strings and remove surrounding quotes
     let mut processed_args = Vec::new();
@@ -273,11 +272,11 @@ pub fn call_builtin(
         "log" => builtin_log(args),
         "respond" => builtin_respond(args, ctx),
         "parse-json" => builtin_parse_json(ctx),
-        "validate" => builtin_validate(args, ctx, &schemas),
+        "validate" => builtin_validate(args, ctx, &app_state.schemas),
         "csv.read" => builtin_csv_read(args, ctx, assign_to),
         "csv.write" => builtin_csv_write(args, ctx),
         "csv.append" => builtin_csv_append(args, ctx),
-        "datasource" => builtin_data_source(args, ctx, &schemas, assign_to, &data_sources),
+        "datasource" => builtin_data_source(args, ctx, &app_state, assign_to).await,
         _ => {
             eprintln!("[WARN] unknown builtin: {}", name);
             BuiltinResult::Ok

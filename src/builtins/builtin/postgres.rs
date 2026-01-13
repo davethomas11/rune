@@ -1,8 +1,35 @@
 // src/builtins/datasource_postgres.rs
-
-use sqlx::{Pool, Postgres, Row, postgres::PgRow};
+use sqlx::{Pool, Postgres, Row, postgres::PgRow, Column};
 use serde_json::{Value as JsonValue, Map};
 use crate::builtins::{Context, BuiltinResult};
+
+use tokio::sync::OnceCell;
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+static POSTGRES_POOLS: OnceCell<Arc<Mutex<HashMap<String, Pool<Postgres>>>>> = OnceCell::const_new();
+
+async fn init_pool(connection_string: &str) {
+    let pool = Pool::<Postgres>::connect(connection_string).await.unwrap();
+    let pools = POSTGRES_POOLS.get_or_init(|| async { Arc::new(Mutex::new(HashMap::new())) }).await;
+    let mut pools_guard = pools.lock().await;
+    pools_guard.insert(connection_string.to_string(), pool);
+}
+
+/// Create or reuse a PostgreSQL connection pool
+pub async fn create_or_reuse_postgres_pool(
+    connection_string: &str,
+) -> Result<Pool<Postgres>, sqlx::Error> {
+    let pools = POSTGRES_POOLS.get_or_init(|| async { Arc::new(Mutex::new(HashMap::new())) }).await;
+    let mut pools_guard: tokio::sync::MutexGuard<HashMap<String, Pool<Postgres>>> = pools.lock().await;
+    if !pools_guard.contains_key(connection_string) {
+        let pool = Pool::<Postgres>::connect(connection_string).await?;
+        pools_guard.insert(connection_string.to_string(), pool);
+    }
+    Ok(pools_guard.get(connection_string).unwrap().clone())
+}
 
 /// Built-in to execute a PostgreSQL query and store results in context.
 /// Expected args: ["query_string", "param1", "param2", ...]

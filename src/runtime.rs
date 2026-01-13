@@ -1,13 +1,15 @@
 use crate::builtins::{call_builtin, BuiltinResult, Context};
 use crate::rune_ast::{RuneDocument, Section, Value};
+use async_recursion::async_recursion;
 use axum::{
     http::StatusCode,
-    response::IntoResponse,
     routing::{delete, get, post, put},
     Router,
 };
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -15,6 +17,7 @@ pub struct AppState {
     pub doc: Arc<RuneDocument>,
     pub schemas: Arc<HashMap<String, Section>>, // For @Schema
     pub data_sources: Arc<HashMap<String, Section>>, // For @Datasource
+    pub shared_context: Arc<Context>,           // Shared context across requests
 }
 
 pub fn get_app_type(doc: &RuneDocument) -> Option<String> {
@@ -43,7 +46,7 @@ fn extract_schemas(doc: &RuneDocument) -> HashMap<String, Section> {
 fn extract_data_sources(doc: &RuneDocument) -> HashMap<String, Section> {
     let mut data_sources = HashMap::new();
     for section in &doc.sections {
-        if section.path.first().map(|s| s.as_str()) == Some("Datasource") {
+        if section.path.first().map(|s| s.as_str()) == Some("DataSource") {
             if let Some(name) = section.path.get(1) {
                 data_sources.insert(name.clone(), section.clone());
             }
@@ -54,11 +57,12 @@ fn extract_data_sources(doc: &RuneDocument) -> HashMap<String, Section> {
 
 pub fn build_router(doc: RuneDocument, verbose: bool) -> Router {
     let schemas = Arc::new(extract_schemas(&doc));
-    let datasources = Arc::new(extract_data_sources(&doc)); // Placeholder for datasources
+    let data_sources = Arc::new(extract_data_sources(&doc));
     let state = AppState {
         doc: Arc::new(doc),
         schemas,
         data_sources,
+        shared_context: Arc::new(Context::new()),
     };
     let mut router = Router::new();
 
@@ -86,25 +90,34 @@ pub fn build_router(doc: RuneDocument, verbose: bool) -> Router {
 
             if method == "CRUD" {
                 for m in &["GET", "POST", "PUT", "DELETE"] {
-                    let run_steps = crate::builtins::builtin::data_source::get_data_source_commands(
-                        m,
-                        section.clone(),
-                        &state.schemas,
-                        &state.data_sources,
-                    );
-                    let handler = create_handler(state_clone.clone(), run_steps.clone(), verbose);
-                    let route_fn = match *m {
-                        "GET" => get(move |params| handler(params, None)),
-                        "POST" => post(move |params, body| handler(params, Some(body))),
-                        "PUT" => put(move |params, body| handler(params, Some(body))),
-                        "DELETE" => delete(move |params| handler(params, None)),
-                        _ => unreachable!(),
-                    };
-                    router = router.route(&axum_path, route_fn);
+                    for &with_id in &[false, true] {
+                        let path = if with_id {
+                            format!("{}/:id", axum_path)
+                        } else {
+                            axum_path.clone()
+                        };
+                        let run_steps =
+                            crate::builtins::builtin::data_source::get_data_source_commands(
+                                m,
+                                section.clone(),
+                                &state.schemas,
+                                &state.data_sources,
+                                with_id,
+                            );
+                        let handler =
+                            create_handler(state_clone.clone(), run_steps.clone(), verbose);
+                        let route_fn = match *m {
+                            "GET" => get(move |params| handler(params, None)),
+                            "POST" => post(move |params, body| handler(params, Some(body))),
+                            "PUT" => put(move |params, body| handler(params, Some(body))),
+                            "DELETE" => delete(move |params| handler(params, None)),
+                            _ => unreachable!(),
+                        };
+                        router = router.route(&path, route_fn);
+                    }
                 }
                 continue;
             }
-
 
             let route_fn = match method.as_str() {
                 "GET" | "DELETE" => {
@@ -143,8 +156,13 @@ fn create_handler(
     state: AppState,
     steps: Vec<Value>,
     verbose: bool,
-) -> impl Fn(axum::extract::Path<HashMap<String, String>>, Option<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = (StatusCode, String)> + Send>> + Clone {
-    move |axum::extract::Path(params): axum::extract::Path<HashMap<String, String>>, body: Option<String>| {
+) -> impl Fn(
+    axum::extract::Path<HashMap<String, String>>,
+    Option<String>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = (StatusCode, String)> + Send>>
+       + Clone {
+    move |axum::extract::Path(params): axum::extract::Path<HashMap<String, String>>,
+          body: Option<String>| {
         let state = state.clone();
         let steps = steps.clone();
         Box::pin(async move { execute_steps(state, steps, body, Some(params), verbose).await })
@@ -152,15 +170,29 @@ fn create_handler(
 }
 
 // Helper to resolve simple literals and dotted paths in context
-fn resolve_path(ctx: &Context, ident: &str, it: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+fn resolve_path(
+    ctx: &Context,
+    ident: &str,
+    it: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
     // literals
-    if ident == "null" { return Some(serde_json::Value::Null); }
-    if ident == "true" { return Some(serde_json::Value::Bool(true)); }
-    if ident == "false" { return Some(serde_json::Value::Bool(false)); }
-    if ident.starts_with('"') && ident.ends_with('"') && ident.len() >= 2 {
-        return Some(serde_json::Value::String(ident[1..ident.len()-1].to_string()));
+    if ident == "null" {
+        return Some(serde_json::Value::Null);
     }
-    if let Ok(n) = ident.parse::<f64>() { return Some(serde_json::Value::from(n)); }
+    if ident == "true" {
+        return Some(serde_json::Value::Bool(true));
+    }
+    if ident == "false" {
+        return Some(serde_json::Value::Bool(false));
+    }
+    if ident.starts_with('"') && ident.ends_with('"') && ident.len() >= 2 {
+        return Some(serde_json::Value::String(
+            ident[1..ident.len() - 1].to_string(),
+        ));
+    }
+    if let Ok(n) = ident.parse::<f64>() {
+        return Some(serde_json::Value::from(n));
+    }
 
     let mut parts = ident.split('.');
     let first = parts.next().unwrap_or("");
@@ -187,14 +219,20 @@ fn eval_condition(ctx: &Context, expr: &str, it: Option<&serde_json::Value>) -> 
     // very simple: support == and != with loose numeric equality
     fn loose_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
         use serde_json::Value::*;
-        if a == b { return true; }
+        if a == b {
+            return true;
+        }
         match (a, b) {
             (Number(na), String(sb)) => {
-                if let Some(da) = na.as_f64() { return sb.parse::<f64>().ok().map(|db| db == da).unwrap_or(false); }
+                if let Some(da) = na.as_f64() {
+                    return sb.parse::<f64>().ok().map(|db| db == da).unwrap_or(false);
+                }
                 false
             }
             (String(sa), Number(nb)) => {
-                if let Some(db) = nb.as_f64() { return sa.parse::<f64>().ok().map(|da| da == db).unwrap_or(false); }
+                if let Some(db) = nb.as_f64() {
+                    return sa.parse::<f64>().ok().map(|da| da == db).unwrap_or(false);
+                }
                 false
             }
             _ => false,
@@ -216,7 +254,8 @@ fn eval_condition(ctx: &Context, expr: &str, it: Option<&serde_json::Value>) -> 
     false
 }
 
-fn execute_steps_inner(
+#[async_recursion]
+async fn execute_steps_inner(
     state: AppState,
     steps: &[Value],
     ctx: &mut Context,
@@ -234,11 +273,21 @@ fn execute_steps_inner(
                     let mut in_quotes = false;
                     while i < bytes.len() {
                         let c = bytes[i] as char;
-                        if c == '"' { in_quotes = !in_quotes; i += 1; continue; }
+                        if c == '"' {
+                            in_quotes = !in_quotes;
+                            i += 1;
+                            continue;
+                        }
                         if !in_quotes && c == '=' {
-                            let prev = if i > 0 { bytes[i-1] as char } else { '\0' };
-                            let next = if i+1 < bytes.len() { bytes[i+1] as char } else { '\0' };
-                            if prev != '=' && next != '=' { return Some(i); }
+                            let prev = if i > 0 { bytes[i - 1] as char } else { '\0' };
+                            let next = if i + 1 < bytes.len() {
+                                bytes[i + 1] as char
+                            } else {
+                                '\0'
+                            };
+                            if prev != '=' && next != '=' {
+                                return Some(i);
+                            }
                         }
                         i += 1;
                     }
@@ -248,8 +297,11 @@ fn execute_steps_inner(
                     let (var, cmd) = step.split_at(eq_pos);
                     let var = var.trim();
                     let cmd = cmd[1..].trim();
-                    let parts: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
-                    if parts.is_empty() { continue; }
+                    let parts: Vec<String> =
+                        cmd.split_whitespace().map(|s| s.to_string()).collect();
+                    if parts.is_empty() {
+                        continue;
+                    }
 
                     // Special handling: array index assignment like users[index] = body
                     if let Some(bracket_pos) = var.find('[') {
@@ -261,9 +313,15 @@ fn execute_steps_inner(
                             let mut idx: Option<usize> = None;
                             let index_expr_trim = index_expr.trim();
                             if let Ok(n) = index_expr_trim.parse::<i64>() {
-                                if n >= 0 { idx = Some(n as usize); }
+                                if n >= 0 {
+                                    idx = Some(n as usize);
+                                }
                             } else if let Some(JsonValue::Number(n)) = ctx.get(index_expr_trim) {
-                                if let Some(i) = n.as_i64() { if i >= 0 { idx = Some(i as usize); } }
+                                if let Some(i) = n.as_i64() {
+                                    if i >= 0 {
+                                        idx = Some(i as usize);
+                                    }
+                                }
                             }
 
                             // Determine RHS value if it's a simple variable/literal (single token)
@@ -271,7 +329,9 @@ fn execute_steps_inner(
                                 if parts.len() == 1 {
                                     if let Some(value) = resolve_path(ctx, &parts[0], None) {
                                         if let Some(JsonValue::Array(_)) = ctx.get(base) {
-                                            if let Some(arr) = ctx.get_mut(base).and_then(|v| v.as_array_mut()) {
+                                            if let Some(arr) =
+                                                ctx.get_mut(base).and_then(|v| v.as_array_mut())
+                                            {
                                                 if i < arr.len() {
                                                     arr[i] = value;
                                                     // Completed this assignment
@@ -288,25 +348,46 @@ fn execute_steps_inner(
 
                     let name = &parts[0];
                     let args = &parts[1..];
-                    if verbose { println!("[DEBUG] Executing: {} = {} {:?}", var, name, args); }
-                    let res = call_builtin(name, args, ctx, state.schemas.clone(), Some(var), state.data_sources.clone());
-                    if verbose { println!("[DEBUG] Result: {:?}", res); }
+                    if verbose {
+                        println!("[DEBUG] Executing: {} = {} {:?}", var, name, args);
+                    }
+                    let res = call_builtin(name, args, ctx, &state, Some(var)).await;
+                    if verbose {
+                        println!("[DEBUG] Result: {:?}", res);
+                    }
                     match res {
                         BuiltinResult::Ok => {}
-                        BuiltinResult::Respond(code, msg) => { last_response = Some((code, msg)); break; }
-                        BuiltinResult::Error(err) => { last_response = Some((500, err)); break; }
+                        BuiltinResult::Respond(code, msg) => {
+                            last_response = Some((code, msg));
+                            break;
+                        }
+                        BuiltinResult::Error(err) => {
+                            last_response = Some((500, err));
+                            break;
+                        }
                     }
                 } else {
-                    let parts: Vec<String> = step.split_whitespace().map(|s| s.to_string()).collect();
-                    if parts.is_empty() { continue; }
+                    let parts: Vec<String> =
+                        step.split_whitespace().map(|s| s.to_string()).collect();
+                    if parts.is_empty() {
+                        continue;
+                    }
                     let name = &parts[0];
                     let args = &parts[1..];
-                    if verbose { println!("[DEBUG] Executing: {} {:?}", name, args); }
-                    let res = call_builtin(name, args, ctx, state.schemas.clone(), None, state.data_sources.clone());
+                    if verbose {
+                        println!("[DEBUG] Executing: {} {:?}", name, args);
+                    }
+                    let res = call_builtin(name, args, ctx, &state, None).await;
                     match res {
                         BuiltinResult::Ok => {}
-                        BuiltinResult::Respond(code, msg) => { last_response = Some((code, msg)); break; }
-                        BuiltinResult::Error(err) => { last_response = Some((500, err)); break; }
+                        BuiltinResult::Respond(code, msg) => {
+                            last_response = Some((code, msg));
+                            break;
+                        }
+                        BuiltinResult::Error(err) => {
+                            last_response = Some((500, err));
+                            break;
+                        }
                     }
                 }
             }
@@ -317,7 +398,10 @@ fn execute_steps_inner(
                         if let Value::List(nested) = v {
                             let ok = eval_condition(ctx, cond, None);
                             if ok {
-                                if let Some(resp) = execute_steps_inner(state.clone(), nested, ctx, verbose) {
+                                if let Some(resp) =
+                                    execute_steps_inner(state.clone(), nested, ctx, verbose)
+                                        .await
+                                {
                                     last_response = Some(resp);
                                     break;
                                 }
@@ -340,7 +424,7 @@ async fn execute_steps(
     body: Option<String>,
     path_params: Option<HashMap<String, String>>,
     verbose: bool,
-) -> impl IntoResponse {
+) -> (StatusCode, String) {
     let mut ctx: Context = Context::new();
 
     // Store path params in context
@@ -360,7 +444,8 @@ async fn execute_steps(
         ctx.insert("body".to_string(), body_str.clone().into());
     }
 
-    let last_response = execute_steps_inner(state.clone(), &steps, &mut ctx, verbose);
+    let last_response = execute_steps_inner(state.clone(), &steps, &mut ctx, verbose)
+        .await;
 
     if let Some((code, msg)) = last_response {
         (StatusCode::from_u16(code).unwrap_or(StatusCode::OK), msg)

@@ -13,6 +13,7 @@ secret = $jwt_secret$
 @DataSource/CatsDataSource
 type = postgres
 connection = $connection_string$
+db = animals_db
 
 @Schema/Cat
 name = string
