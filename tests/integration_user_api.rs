@@ -20,7 +20,8 @@ fn write_temp_users_csv(rows: &[(&str, &str, &str)]) -> PathBuf {
 
 fn build_router_from_str(contents: &str) -> Router {
     let doc = parse_rune(contents).expect("parse_rune should succeed");
-    build_router(doc, false)
+    let path_buff = std::path::Path::new("test_user_api.rune").to_path_buf();
+    build_router(doc, path_buff, false)
 }
 
 #[tokio::test]

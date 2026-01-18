@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use tower::ServiceExt; // for `oneshot`
@@ -7,7 +8,8 @@ use rune_runtime::runtime::build_router;
 
 fn build_router_from_str(contents: &str) -> Router {
     let doc = parse_rune(contents).expect("parse_rune should succeed");
-    build_router(doc, false)
+    let path = std::path::Path::new("test_app.rune");
+    build_router(doc, PathBuf::from(path), false)
 }
 
 #[tokio::test]
