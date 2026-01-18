@@ -28,3 +28,10 @@ species = string
 data_source = CatsDataSource
 authentication = JWTAuth
 schema = Cat
+
+@Frontend
+name = Cat Frontend
+type = web
+path = %ROOT%
+layout = crud_powered
+css = frontend.css

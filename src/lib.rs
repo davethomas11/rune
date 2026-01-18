@@ -1,3 +1,4 @@
+pub mod crud_web_fe;
 pub mod rune_parser;
 pub mod runtime;
 pub mod rune_ast;

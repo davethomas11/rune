@@ -1,3 +1,4 @@
+use super::crud_web_fe::create_web_fe_handler;
 use crate::builtins::{call_builtin, BuiltinResult, Context};
 use crate::rune_ast::{RuneDocument, Section, Value};
 use async_recursion::async_recursion;
@@ -6,9 +7,11 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
-use serde_json::{Value as JsonValue};
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+use tower_http::services::ServeDir;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -53,7 +56,7 @@ fn extract_data_sources(doc: &RuneDocument) -> HashMap<String, Section> {
     data_sources
 }
 
-pub fn build_router(doc: RuneDocument, verbose: bool) -> Router {
+pub fn build_router(doc: RuneDocument, rune_dir: PathBuf, verbose: bool) -> Router {
     let schemas = Arc::new(extract_schemas(&doc));
     let data_sources = Arc::new(extract_data_sources(&doc));
     let state = AppState {
@@ -64,7 +67,42 @@ pub fn build_router(doc: RuneDocument, verbose: bool) -> Router {
     };
     let mut router = Router::new();
 
+    // Serve static files from the directory containing the rune document, mounted at /assets
+
+    router = router.nest_service("/assets", ServeDir::new(rune_dir.clone()));
+
     for section in &state.doc.sections {
+        if section.path.first().map(|s| s.as_str()) == Some("Frontend") {
+            if let Some(Value::String(frontend_type)) = section.kv.get("type") {
+                if frontend_type == "web" {
+                    println!("[INFO] Mounting web frontend: {:?} {:?}", section.path, section.kv);
+                    // Create a route for web frontend
+                    let fe_path = section
+                        .kv
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("/");
+                    let layout = section
+                        .kv
+                        .get("layout")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if layout == "crud_powered" {
+                        let wpath = if fe_path == "%ROOT%" { "/" } else { fe_path };
+                        // Handler from crud_web_fe
+                        let state_clone = state.clone();
+                        let name = section.kv.get("name").unwrap().to_string();
+                        router = router.route(
+                            wpath,
+                            get(move || create_web_fe_handler(state_clone.clone(), name)),
+                        );
+
+                        println!("[INFO] Web Frontend (CRUD Powered) mounted at {}\n", wpath);
+                    }
+                }
+            }
+        }
+
         if section.path.first().map(|s| s.as_str()) == Some("Route") {
             if section.path.len() < 3 {
                 continue;
@@ -396,8 +434,7 @@ async fn execute_steps_inner(
                             let ok = eval_condition(ctx, cond, None);
                             if ok {
                                 if let Some(resp) =
-                                    execute_steps_inner(state.clone(), nested, ctx, verbose)
-                                        .await
+                                    execute_steps_inner(state.clone(), nested, ctx, verbose).await
                                 {
                                     last_response = Some(resp);
                                     break;
@@ -441,8 +478,7 @@ async fn execute_steps(
         ctx.insert("body".to_string(), body_str.clone().into());
     }
 
-    let last_response = execute_steps_inner(state.clone(), &steps, &mut ctx, verbose)
-        .await;
+    let last_response = execute_steps_inner(state.clone(), &steps, &mut ctx, verbose).await;
 
     if let Some((code, msg)) = last_response {
         (StatusCode::from_u16(code).unwrap_or(StatusCode::OK), msg)

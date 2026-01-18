@@ -1,0 +1,162 @@
+:root {
+    --primary: #4f46e5;
+    --primary-hover: #4338ca;
+    --bg: #f8fafc;
+    --card-bg: #ffffff;
+    --text-main: #1e293b;
+    --text-muted: #64748b;
+    --border: #e2e8f0;
+    --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}
+
+body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-color: var(--bg);
+    color: var(--text-main);
+    line-height: 1.5;
+    margin: 0;
+    padding: 0 0 60px 0;
+}
+
+h1 {
+    background: var(--text-main);
+    color: white;
+    padding: 2rem 3rem;
+    margin: 0 0 3rem 0;
+    font-weight: 700;
+    font-size: 1.875rem;
+    box-shadow: var(--shadow);
+}
+
+.container {
+    width: 90%;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1.5rem;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+h2::before {
+    content: "";
+    display: inline-block;
+    width: 4px;
+    height: 1.25rem;
+    background: var(--primary);
+    border-radius: 2px;
+}
+
+/* Table Styling */
+table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    background: var(--card-bg);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+    margin-bottom: 3rem;
+}
+
+th {
+    background: #f1f5f9;
+    padding: 1rem;
+    text-align: left;
+    font-size: 0.875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+
+td {
+    padding: 1rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.95rem;
+}
+
+tr:hover td {
+    background-color: #f8fafc;
+}
+
+/* Form Styling */
+form {
+    background: var(--card-bg);
+    padding: 2rem;
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+    max-width: 500px;
+}
+
+.form-group {
+    margin-bottom: 1.25rem;
+}
+
+label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+}
+
+input[type='text'], input[type='number'] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.625rem 0.875rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 1rem;
+    transition: all 0.2s;
+}
+
+input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+input[type='submit'] {
+    width: 100%;
+    background: var(--primary);
+    color: white;
+    padding: 0.75rem;
+    border: none;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+input[type='submit']:hover {
+    background: var(--primary-hover);
+}
+
+/* Buttons in Actions column */
+button {
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: white;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+button.edit:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+button.delete:hover {
+    border-color: #ef4444;
+    color: #ef4444;
+    background: #fef2f2;
+}

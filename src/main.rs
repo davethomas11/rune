@@ -1,6 +1,7 @@
 // src/main.rs
 mod builtins;
 mod cli;
+mod crud_web_fe;
 mod rune_ast;
 mod rune_parser;
 mod runtime;
@@ -232,7 +233,15 @@ async fn main() -> anyhow::Result<()> {
         if is_verbose {
             println!("Config: \n{}", api_doc(&doc));
         }
-        let app = build_router(doc.clone(), is_verbose);
+        let rune_dir = if script_path == "-" {
+            std::env::current_dir().unwrap()
+        } else {
+            std::path::Path::new(script_path)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::env::current_dir().unwrap())
+        };
+        let app = build_router(doc.clone(), rune_dir, is_verbose);
         let port = doc
             .get_section("App")
             .and_then(|sec| sec.kv.get("port"))
