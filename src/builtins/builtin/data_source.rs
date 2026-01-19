@@ -11,7 +11,7 @@ use crate::runtime::AppState;
 use sqlx::{Pool, Postgres, MySql};
 use std::collections::HashMap;
 use std::sync::Arc;
-
+use sqlx::types::JsonValue;
 // --- Shared Helpers ---
 
 async fn get_pool_details(datasource_name: &str, state: &AppState) -> Result<(String, String), BuiltinResult> {
@@ -159,7 +159,6 @@ pub fn get_data_source_commands(
         ],
         "PUT" => vec![
             Value::String("parse-json".to_string()),
-            Value::String("validate body #".to_string() + &schema_name),
             Value::String(create_table_command),
             Value::String(format!("datasource update {} in {}", schema_name, data_source_name)),
             Value::String("respond 200 data_object".to_string()),
@@ -257,10 +256,26 @@ pub async fn fetch_from_datasource(name: &str, args: &[String], state: &AppState
         Ok(v) => v,
         Err(e) => return e,
     };
+    let target = if args.len() > 3 && args[2] == "into" { Some(args[3].as_str()) } else { assign_to };
     let id = get_id_from_ctx(ctx);
 
     if id.is_empty() { return BuiltinResult::Error("missing id".into()); }
-    execute_query(&conn_type, ds_name, state, ctx, format!("SELECT * FROM {} WHERE id = {} LIMIT 1", name, id), assign_to).await
+    match execute_query(&conn_type, ds_name, state, ctx, format!("SELECT * FROM {} WHERE id = {} LIMIT 1", name, id), target).await {
+        BuiltinResult::Ok => {
+            // After fetching, move the first result into target variable
+            if let Some(var_name) = target {
+                if let Some(JsonValue::Array(arr)) = ctx.get(var_name) {
+                    if let Some(first) = arr.get(0) {
+                        ctx.insert(var_name.into(), first.clone());
+                    } else {
+                        return BuiltinResult::Respond(404, "no record found".into())
+                    }
+                }
+            }
+            BuiltinResult::Ok
+        }
+        other => other,
+    }
 }
 
 pub async fn delete_from_datasource(name: &str, args: &[String], state: &AppState, ctx: &mut Context, assign_to: Option<&str>) -> BuiltinResult {
@@ -303,6 +318,10 @@ pub async fn insert_into_datasource(name: &str, args: &[String], state: &AppStat
 }
 
 pub async fn update_datasource(name: &str, args: &[String], state: &AppState, ctx: &mut Context) -> BuiltinResult {
+    let schema_section = match state.schemas.get(name) {
+        Some(s) => s,
+        None => return BuiltinResult::Error(format!("schema '{}' not found", name)),
+    };
     let ds_name = args.get(1).map(|s| s.as_str()).unwrap_or("");
     let (_, conn_type) = match get_pool_details(ds_name, state).await {
         Ok(v) => v,
@@ -317,7 +336,9 @@ pub async fn update_datasource(name: &str, args: &[String], state: &AppState, ct
         None => return BuiltinResult::Error("body missing".into()),
     };
 
-    let assignments: Vec<String> = obj.iter().map(|(f, v)| format!("{} = {}", f, format_sql_value(v))).collect();
+    let assignments: Vec<String> = schema_section.kv.keys()
+        .filter_map(|f| obj.get(f).map(|v| format!("{} = {}", f, format_sql_value(v))))
+        .collect();
     let query = format!("UPDATE {} SET {} WHERE id = {}", name, assignments.join(", "), id);
 
     execute_query(&conn_type, ds_name, state, ctx, query, None).await

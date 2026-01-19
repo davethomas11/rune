@@ -55,7 +55,7 @@ pub async fn create_web_fe_handler(app_state: AppState, title: String) -> Html<S
                 for (field, typ) in &schema.kv {
                     let input_type = match typ.as_str().unwrap_or("") {
                         "string" => "text",
-                        "number" => "number",
+                        "number" => "number\" step=\"any",
                         "bool" => "checkbox",
                         _ => "text",
                     };
@@ -64,6 +64,9 @@ pub async fn create_web_fe_handler(app_state: AppState, title: String) -> Html<S
                 writeln!(html, "<input type='submit' value='Create'/></form>").unwrap();
                 // Output JS array for this entity's field order
                 writeln!(html, "<script>window.{}_FIELDS = {};</script>", entity.to_lowercase(), serde_json::to_string(&field_order).unwrap()).unwrap();
+                // Output JS object for this entity's field types
+                let field_types: std::collections::HashMap<_, _> = schema.kv.iter().map(|(k, v)| (k, v.as_str().unwrap_or(""))).collect();
+                writeln!(html, "<script>window.{}_FIELD_TYPES = {};</script>", entity.to_lowercase(), serde_json::to_string(&field_types).unwrap()).unwrap();
             }
         }
     }
@@ -93,10 +96,17 @@ function fetchTable(entity) {{
 }}
 function createRow(entity, form) {{
     const data = {{}};
+    var fieldTypes = window[entity.toLowerCase() + '_FIELD_TYPES'];
+    if (!fieldTypes) fieldTypes = {{}};
     for (const el of form.elements) {{
         if (el.name) {{
-            if (el.type === 'checkbox') data[el.name] = el.checked;
-            else data[el.name] = el.value;
+            if (el.type === 'checkbox') {{
+                data[el.name] = el.checked;
+            }} else if (fieldTypes[el.name] === 'number') {{
+                data[el.name] = el.value === '' ? null : Number(el.value);
+            }} else {{
+                data[el.name] = el.value;
+            }}
         }}
     }}
     fetch('/' + entity, {{
@@ -111,22 +121,67 @@ function deleteRow(entity, id) {{
         .then(() => fetchTable(entity));
 }}
 function editRow(entity, id) {{
-    // For demo: just prompt for each field
     fetch(`/${{entity}}/${{id}}`)
         .then(r => r.json())
         .then(row => {{
-            let updates = {{}};
-            for (const key of Object.keys(row)) {{
-                if (key === 'id') continue;
-                const val = prompt(`Edit ${{key}}:`, row[key]);
-                if (val !== null) updates[key] = val;
+            const table = document.getElementById(entity + '_table');
+            const tbody = table.querySelector('tbody');
+            // Find the row to edit
+            for (const tr of tbody.children) {{
+                if (tr.firstChild && tr.firstChild.textContent == id) {{
+                    // Replace cells with input fields for editing
+                    const fieldOrder = window[entity + '_FIELDS'] || [];
+                    const fieldTypes = window[entity.toLowerCase() + '_FIELD_TYPES'] || {{}};
+                    let idx = 1;
+                    for (const key of fieldOrder) {{
+                        const td = tr.children[idx];
+                        if (fieldTypes[key] === 'bool') {{
+                            const checked = row[key] ? 'checked' : '';
+                            td.innerHTML = `<input type='checkbox' name='${{key}}' ${{
+checked}}/>`;
+                        }} else {{
+                            td.innerHTML = `<input value='${{row[key] ?? ''}}' name='${{key}}' />`;
+                        }}
+                        idx++;
+                    }}
+                    // Replace actions with Save/Cancel
+                    const actionsTd = tr.lastChild;
+                    actionsTd.innerHTML = `
+                        <button onclick=\"saveEditRow('${{entity}}', ${{id}}, this)\">Save</button>
+                        <button onclick=\"cancelEditRow('${{entity}}', ${{id}})\">Cancel</button>
+                    `;
+                    break;
+                }}
             }}
-            fetch(`/${{entity}}/${{id}}`, {{
-                method: 'PUT',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify(updates)
-            }}).then(() => fetchTable(entity));
         }});
+}}
+function saveEditRow(entity, id, btn) {{
+    const tr = btn.closest('tr');
+    const fieldOrder = window[entity + '_FIELDS'] || [];
+    const fieldTypes = window[entity.toLowerCase() + '_FIELD_TYPES'] || {{}};
+    let updates = {{}};
+    let idx = 1;
+    for (const key of fieldOrder) {{
+        const input = tr.children[idx].querySelector('input');
+        if (input) {{
+            if (fieldTypes[key] === 'bool') {{
+                updates[key] = input.checked;
+            }} else if (fieldTypes[key] === 'number') {{
+                updates[key] = input.value === '' ? null : Number(input.value);
+            }} else {{
+                updates[key] = input.value;
+            }}
+        }}
+        idx++;
+    }}
+    fetch(`/${{entity}}/${{id}}`, {{
+        method: 'PUT',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify(updates)
+    }}).then(() => fetchTable(entity));
+}}
+function cancelEditRow(entity, id) {{
+    fetchTable(entity);
 }}
 document.addEventListener('DOMContentLoaded', function() {{
     for (const entity of window.CRUD_ENTITIES) fetchTable(entity);
