@@ -1,6 +1,6 @@
 Vectrune
 ========
-![Vectrune Logo](intellij_plugin/src/main/resources/icons/rune.png)
+![Vectrune Logo](intellij_plugin/src/resources/icons/rune.png)
 
 Vectrune is a **declarative + functional** configuration language intended for:
 - describing structured data
