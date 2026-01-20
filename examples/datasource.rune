@@ -5,11 +5,6 @@ name = Example API with Data Source
 type = REST
 version = 1.0
 
-@Authentication
-name = JWTAuth
-type = jwt
-secret = $jwt_secret$
-
 @DataSource/CatsDataSource
 type = postgres
 connection = $connection_string$

@@ -2,6 +2,7 @@
 
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use crate::rune_parser::parse_rune;
 
 pub mod builtin {
     pub mod log;
@@ -21,6 +22,7 @@ use builtin::validate::builtin_validate;
 use builtin::csv::{builtin_csv_read, builtin_csv_write, builtin_csv_append};
 use builtin::data_source::builtin_data_source;
 use crate::runtime::AppState;
+use crate::util::json_to_xml;
 
 pub type Context = HashMap<String, JsonValue>;
 
@@ -32,7 +34,47 @@ pub enum BuiltinResult {
 }
 
 // --- Builtin function declarations ---
-
+pub fn builtin_load_rune(
+    args: &[String],
+    ctx: &mut Context,
+    assign_to: Option<&str>,
+    app_state: &AppState,
+) -> BuiltinResult {
+    use std::fs;
+    if args.is_empty() {
+        eprintln!("[ERROR] load-rune: missing filename");
+        return BuiltinResult::Error("missing filename".to_string());
+    }
+    let filename = app_state.path.join(&args[0]);
+    match fs::read_to_string(filename) {
+        Ok(content) => {
+            let rune_doc = match parse_rune(&content) {
+                Ok(doc) => doc,
+                Err(e) => {
+                    return BuiltinResult::Error(format!("load-rune parse error: {}", e));
+                }
+            };
+            if let Some(var_name) = assign_to {
+                if args.len() >= 3 && &args[1] == "as" {
+                    let output_type = &args[2];
+                    if output_type == "xml" {
+                        let xml_output = json_to_xml(&rune_doc.to_json(), "root");
+                        ctx.insert(var_name.to_string(), JsonValue::String(xml_output));
+                    } else {
+                        return BuiltinResult::Respond(400, format!("load-rune: unsupported output type {}", output_type))
+                    }
+                } else {
+                    ctx.insert(var_name.to_string(), rune_doc.to_json());
+                }
+            }
+            BuiltinResult::Ok
+        }
+        Err(e) => {
+            eprintln!("[ERROR] load-rune: {}", e);
+            BuiltinResult::Error(format!("load-rune error: {}", e))
+        }
+    }
+}
 
 
 // --- Main dispatcher ---
@@ -278,6 +320,27 @@ pub async fn call_builtin(
         "csv.write" => builtin_csv_write(args, ctx),
         "csv.append" => builtin_csv_append(args, ctx),
         "datasource" => builtin_data_source(args, ctx, &app_state, assign_to).await,
+        "load-rune" => builtin_load_rune(args, ctx, assign_to, app_state),
+        "return" => {
+            if args.is_empty() {
+                eprintln!("[ERROR] return: missing value");
+                BuiltinResult::Error("missing value".to_string())
+            } else {
+                if args.len() >= 3 && &args[1] == "as" {
+                    let output_type = &args[2];
+                    if output_type == "xml" {
+                        let val = ctx.get(args[0].as_str())
+                            .map_or("".to_string(), |v| json_to_xml(v, "root"));
+                        return BuiltinResult::Respond(200, val);
+                    } else {
+                        return BuiltinResult::Respond(400, format!("return: unsupported output type {}", output_type))
+                    }
+                }
+
+                BuiltinResult::Respond(200, ctx.get(args[0].as_str())
+                    .map_or("".to_string(), |v| v.to_string()))
+            }
+        }
         _ => {
             eprintln!("[WARN] unknown builtin: {}", name);
             BuiltinResult::Ok

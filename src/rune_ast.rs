@@ -261,6 +261,10 @@ impl Value {
         if let Value::Number(n) = self { Some(*n as u64) } else { None }
     }
 
+    pub fn as_i64(&self) -> Option<i64> {
+        if let Value::Number(n) = self { Some(*n as i64) } else { None }
+    }
+
     pub fn as_str(&self) -> Option<&str> {
         if let Value::String(s) = self { Some(s) } else { None }
     }

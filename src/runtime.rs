@@ -6,12 +6,21 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, post, put},
     Router,
+    response::IntoResponse
 };
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tower_http::services::ServeDir;
+use axum::{middleware::Next, response::Response, http::Request};
+use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+use serde_json::json;
+use chrono::Utc;
+use jsonwebtoken::{EncodingKey, Header};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+
 
 #[derive(Clone)]
 pub struct AppState {
@@ -19,6 +28,7 @@ pub struct AppState {
     pub schemas: Arc<HashMap<String, Section>>, // For @Schema
     pub data_sources: Arc<HashMap<String, Section>>, // For @Datasource
     pub shared_context: Arc<Context>,           // Shared context across requests
+    pub path: PathBuf,               // Path to the rune document
 }
 
 pub fn get_app_type(doc: &RuneDocument) -> Option<String> {
@@ -56,16 +66,30 @@ fn extract_data_sources(doc: &RuneDocument) -> HashMap<String, Section> {
     data_sources
 }
 
+fn extract_auth_configs(doc: &RuneDocument) -> HashMap<String, Section> {
+    let mut auths = HashMap::new();
+    for section in &doc.sections {
+        if section.path.first().map(|s| s.as_str()) == Some("Authentication") {
+            if let Some(name) = section.path.get(1) {
+                auths.insert(name.clone(), section.clone());
+            }
+        }
+    }
+    auths
+}
+
 pub fn build_router(doc: RuneDocument, rune_dir: PathBuf, verbose: bool) -> Router {
     let schemas = Arc::new(extract_schemas(&doc));
     let data_sources = Arc::new(extract_data_sources(&doc));
+    let auth_configs = Arc::new(extract_auth_configs(&doc));
     let state = AppState {
         doc: Arc::new(doc),
         schemas,
         data_sources,
         shared_context: Arc::new(Context::new()),
+        path: rune_dir.clone()
     };
-    let mut router = Router::new();
+    let mut router = Router::with_state(Router::new(), state.clone());
 
     // Serve static files from the directory containing the rune document, mounted at /assets
 
@@ -148,7 +172,19 @@ pub fn build_router(doc: RuneDocument, rune_dir: PathBuf, verbose: bool) -> Rout
                             "DELETE" => delete(move |params| handler(params, None)),
                             _ => unreachable!(),
                         };
-                        router = router.route(&path, route_fn);
+                        let new_router = Router::new();
+                        let mut route = new_router.route(&path, route_fn);
+                        if let Some(auth_name) = section.kv.get("auth").and_then(|v| v.as_str()) {
+                            if let Some(auth_section) = auth_configs.get(auth_name) {
+                                if let Some(Value::String(secret)) = auth_section.kv.get("secret") {
+                                    let secret = secret.clone(); // clone here
+                                    route = route.layer(axum::middleware::from_fn(move |req, next| {
+                                        jwt_auth(req, next, secret.clone())
+                                    }));
+                                }
+                            }
+                        }
+                        router = router.merge(route);
                     }
                 }
                 continue;
@@ -180,12 +216,106 @@ pub fn build_router(doc: RuneDocument, rune_dir: PathBuf, verbose: bool) -> Rout
                 }
             };
 
-            router = router.route(&axum_path, route_fn);
+            let new_router = Router::new();
+            let mut route = new_router.route(&axum_path, route_fn);
+            if let Some(auth_name) = section.kv.get("auth").and_then(|v| v.as_str()) {
+                if let Some(auth_section) = auth_configs.get(auth_name) {
+                    if let Some(Value::String(secret)) = auth_section.kv.get("secret") {
+                        let secret = secret.clone(); // clone here
+                        route = route.layer(axum::middleware::from_fn(move |req, next| {
+                            jwt_auth(req, next, secret.clone())
+                        }));
+                    }
+                }
+            }
+            router = router.merge(route);
         }
     }
 
-    router.with_state(state)
+
+    add_token_endpoints(router, &auth_configs)
 }
+
+async fn token_handler(
+    req: Request<axum::body::Body>,
+    secret: String,
+    creds: Option<Value>,
+    token_expiry: i64,
+) -> impl IntoResponse {
+    // Parse Basic Auth if credentials are set
+    if let Some(Value::Map(ref map)) = creds {
+        let expected_user = map.get("username").and_then(|v| v.as_str()).unwrap_or("");
+        let expected_pass = map.get("password").and_then(|v| v.as_str()).unwrap_or("");
+        let auth_header = req.headers().get("Authorization").and_then(|v| v.to_str().ok());
+        if let Some(auth_header) = auth_header {
+            if let Some(basic) = auth_header.strip_prefix("Basic ") {
+                if let Ok(decoded) = BASE64.decode(basic) {
+                    if let Ok(decoded_str) = std::str::from_utf8(&decoded) {
+                        let mut parts = decoded_str.splitn(2, ':');
+                        let user = parts.next().unwrap_or("");
+                        let pass = parts.next().unwrap_or("");
+                        if user != expected_user || pass != expected_pass {
+                            return (StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()).into_response();
+                        }
+                    } else {
+                        return (StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()).into_response();
+                    }
+                } else {
+                    return (StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()).into_response();
+                }
+            } else {
+                return (StatusCode::UNAUTHORIZED, "Missing Basic Auth".to_string()).into_response();
+            }
+        } else {
+            return (StatusCode::UNAUTHORIZED, "Missing Basic Auth".to_string()).into_response();
+        }
+    }
+    // Create JWT
+    let claims = json!({
+        "exp": Utc::now().timestamp() + token_expiry,
+        "iat": Utc::now().timestamp(),
+    });
+    let token = jsonwebtoken::encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    ).unwrap();
+    (StatusCode::OK, token).into_response()
+}
+
+fn add_token_endpoints(
+    mut router: Router,
+    auth_configs: &HashMap<String, Section>,
+) -> Router {
+    for (_auth_name, auth_section) in auth_configs.iter() {
+        if let Some(Value::String(token_endpoint)) = auth_section.kv.get("token_endpoint") {
+            let secret = auth_section.kv.get("secret").and_then(|v| v.as_str()).unwrap_or("");
+            let credentials = auth_section.kv.get("token_credentials");
+            let token_expiry = auth_section.kv.get("token_expiry").and_then(|v| v.as_i64()).unwrap_or(3600);
+
+            let endpoint = token_endpoint.clone();
+            let secret = secret.to_string();
+            let creds = credentials.cloned();
+
+            router = router.route(
+                &endpoint,
+                post({
+                    let secret = secret.clone();
+                    let creds = creds.clone();
+                    move |req: axum::http::Request<axum::body::Body>| {
+                        let secret = secret.clone();
+                        let creds = creds.clone();
+                        async move {
+                            token_handler(req, secret, creds, token_expiry).await
+                        }
+                    }
+                }),
+            );
+        }
+    }
+    router
+}
+
 
 fn create_handler(
     state: AppState,
@@ -485,4 +615,27 @@ async fn execute_steps(
     } else {
         (StatusCode::OK, "OK".to_string())
     }
+}
+
+async fn jwt_auth(
+    mut req: Request<axum::body::Body>,
+    next: Next,
+    secret: String,
+) -> Result<Response, StatusCode> {
+    let headers = req.headers();
+    if let Some(auth_header) = headers.get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                let validation = Validation::new(Algorithm::HS256);
+                if decode::<serde_json::Value>(
+                    token,
+                    &DecodingKey::from_secret(secret.as_bytes()),
+                    &validation,
+                ).is_ok() {
+                    return Ok(next.run(req).await);
+                }
+            }
+        }
+    }
+    Err(StatusCode::UNAUTHORIZED)
 }

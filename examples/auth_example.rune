@@ -1,0 +1,31 @@
+#!RUNE
+
+@App
+name = User API
+version = 1.0
+type = REST
+
+@Authentication/JWTAuth
+type = jwt
+secret = $jwt_secret$
+token_endpoint = /auth/token
+token_expiry = 3600
+token_signing_algorithm = HS256
+token_issuer = ExampleAPI
+token_audience = ExampleAPIUsers
+token_subject = user_auth
+token_credentials {
+    username = $token_username$
+    password = $token_password$
+}
+
+@Route/GET /Skaters
+run:
+    skaters = load-rune skateboarders.rune
+    return skaters
+
+@Route/GET /Skaters/authenticated
+auth = JWTAuth
+run:
+    skaters = load-rune skateboarders.rune
+    return skaters as xml

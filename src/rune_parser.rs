@@ -9,6 +9,32 @@ pub enum ParseError {
     General(String),
 }
 
+fn parse_map_block<I: Iterator<Item = String>>(lines: &mut I) -> HashMap<String, Value> {
+    let mut map = HashMap::new();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed == "}" {
+            break;
+        }
+        if trimmed.contains('=') {
+            let mut parts = trimmed.splitn(2, '=');
+            let key = parts.next().unwrap().trim().to_string();
+            let value_raw = parts.next().unwrap().trim();
+            let value = if value_raw.starts_with('$') && value_raw.ends_with('$') && value_raw.len() > 2 {
+                let var_name = &value_raw[1..value_raw.len()-1];
+                match std::env::var(var_name) {
+                    Ok(val) => Value::String(val),
+                    Err(_) => Value::String(String::new()),
+                }
+            } else {
+                Value::String(value_raw.trim_matches('"').to_string())
+            };
+            map.insert(key, value);
+        }
+    }
+    map
+}
+
 pub fn parse_rune(input: &str) -> Result<RuneDocument, ParseError> {
     let mut sections: Vec<Section> = Vec::new();
     let mut current_section: Option<Section> = None;
@@ -20,7 +46,9 @@ pub fn parse_rune(input: &str) -> Result<RuneDocument, ParseError> {
     let mut multiline_key: Option<String> = None;
     let mut multiline_buf: Vec<String> = Vec::new();
 
-    for raw in input.lines() {
+    let mut lines = input.lines().map(|l| l.to_string()).peekable();
+
+    while let Some(raw) = lines.next() {
         let line = raw.trim_end();
 
         if line.is_empty() {
@@ -76,6 +104,24 @@ pub fn parse_rune(input: &str) -> Result<RuneDocument, ParseError> {
         }
 
         if let Some(sec) = current_section.as_mut() {
+
+            if let Some(idx) = line.find('{') {
+                let key = line[..idx].trim().to_string();
+                // Collect map block lines
+                let mut map_lines = Vec::new();
+                while let Some(map_line) = lines.next() {
+                    let trimmed = map_line.trim();
+                    if trimmed == "}" {
+                        break;
+                    }
+                    map_lines.push(map_line);
+                }
+                let mut map_iter = map_lines.into_iter();
+                let map = parse_map_block(&mut map_iter);
+                sec.kv.insert(key, Value::Map(map));
+                continue;
+            }
+
             if let Some(idx) = line.find('>') {
                 let key = line[..idx].trim().to_string();
                 multiline_key = Some(key);

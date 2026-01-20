@@ -113,6 +113,19 @@ endpoints = ($API_URL$ $BACKUP_URL$)
 
 This applies to single string values and list items. For literal dollar signs, do not wrap the value in `$...$`.
 
+### 3.8 Maps
+
+Maps are defined using curly braces `{ ... }` after a key. Each entry inside the braces is a key/value pair. 
+
+**Example:**
+```
+@Service
+config {
+    host = $SERVICE_HOST$
+    port = 8080
+}
+```
+
 ---
 
 ## ⚙️ 4. Functional Extensions
