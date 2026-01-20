@@ -1,0 +1,36 @@
+{
+  parserClass="com.vectrune.parser.RuneParser"
+  extends="com.intellij.extapi.psi.ASTWrapperPsiElement"
+
+  psiPackage="com.vectrune.psi"
+  psiImplPackage="com.vectrune.psi.impl"
+
+  // This tells Grammar-Kit where to put the constants
+  elementTypeHolderClass="com.vectrune.RuneTypes"
+  elementTypeClass="com.vectrune.RuneTokenType"
+  tokenTypeClass="com.vectrune.RuneTokenType"
+
+  // Ensure these match your Lexer tokens
+  tokens=[
+    SECTION='regexp:@\w+'
+    KEY='regexp:\w+'
+    EQUALS='='
+    VALUE='regexp:[^\r\n]+'
+    COMMENT='regexp:#.*'
+  ]
+
+  psiClassPrefix="Rune"
+  psiImplUtilClass="com.vectrune.psi.impl.RunePsiImplUtil"
+}
+
+runeFile ::= item_ *
+
+private item_ ::= (section_group | property | COMMENT)
+
+section_group ::= SECTION property* {
+  methods=[getPresentation]
+}
+
+property ::= KEY EQUALS VALUE {
+  methods=[getPresentation]
+}

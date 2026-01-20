@@ -1,0 +1,22 @@
+// This is a generated file. Not intended for manual editing.
+package com.vectrune.psi;
+
+import org.jetbrains.annotations.*;
+import com.intellij.psi.PsiElementVisitor;
+import com.intellij.psi.PsiElement;
+
+public class RuneVisitor extends PsiElementVisitor {
+
+  public void visitProperty(@NotNull RuneProperty o) {
+    visitPsiElement(o);
+  }
+
+  public void visitSectionGroup(@NotNull RuneSectionGroup o) {
+    visitPsiElement(o);
+  }
+
+  public void visitPsiElement(@NotNull PsiElement o) {
+    visitElement(o);
+  }
+
+}

@@ -1,0 +1,26 @@
+<idea-plugin>
+    <id>com.vectrune.rune</id>
+    <name>Rune Support</name>
+    <vendor>VectRune</vendor>
+    <description>Syntax highlighting for .rune files</description>
+    <depends>com.intellij.modules.platform</depends>
+
+    <fileType name="Rune File"
+              language="Rune"
+              extensions="rune"
+              implementationClass="com.vectrune.RuneFileType"
+              fieldName="INSTANCE"/>
+
+    <lang.syntaxHighlighterFactory language="Rune"
+                                   implementationClass="com.vectrune.RuneSyntaxHighlighterFactory"/>
+
+    <lang.parserDefinition
+            language="Rune"
+            implementationClass="com.vectrune.RuneParserDefinition"/>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <lang.psiStructureViewFactory
+                language="Rune"
+                implementationClass="com.vectrune.RuneStructureViewFactory"/>
+    </extensions>
+</idea-plugin>
