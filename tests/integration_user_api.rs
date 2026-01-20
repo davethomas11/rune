@@ -18,10 +18,10 @@ fn write_temp_users_csv(rows: &[(&str, &str, &str)]) -> PathBuf {
     path
 }
 
-fn build_router_from_str(contents: &str) -> Router {
+async fn build_router_from_str(contents: &str) -> Router {
     let doc = parse_rune(contents).expect("parse_rune should succeed");
     let path_buff = std::path::Path::new("test_user_api.rune").to_path_buf();
-    build_router(doc, path_buff, false)
+    build_router(doc, path_buff, false).await
 }
 
 #[tokio::test]
@@ -43,7 +43,7 @@ run:
 "#
     );
 
-    let app = build_router_from_str(&script);
+    let app = build_router_from_str(&script).await;
 
     let resp = app
         .oneshot(Request::builder().uri("/users").body(Body::empty()).unwrap())
@@ -79,7 +79,7 @@ run:
 "#
     );
 
-    let app = build_router_from_str(&script);
+    let app = build_router_from_str(&script).await;
     let resp = app
         .oneshot(Request::builder().uri("/users/999").body(Body::empty()).unwrap())
         .await
@@ -117,7 +117,7 @@ run:
     respond 200 "OK"
 "#
     );
-    let app = build_router_from_str(&script);
+    let app = build_router_from_str(&script).await;
     let body = serde_json::json!({"id": 2, "name": "Bob", "email": "b@example.com"}).to_string();
     let req = Request::builder()
         .method("PUT")
@@ -150,7 +150,7 @@ run:
     respond 200 user
 "#
     );
-    let app = build_router_from_str(&script);
+    let app = build_router_from_str(&script).await;
     let resp = app
         .oneshot(Request::builder().uri("/users/5").body(Body::empty()).unwrap())
         .await
@@ -193,7 +193,7 @@ run:
     respond 200 "OK"
 "#
     );
-    let app = build_router_from_str(&script);
+    let app = build_router_from_str(&script).await;
     let body = serde_json::json!({"id": 1, "name": "Alice Updated", "email": "alice@new.com"}).to_string();
     let req = Request::builder()
         .method("PUT")
@@ -238,7 +238,7 @@ run:
     respond 201 "User added"
 "#
     );
-    let app = build_router_from_str(&script);
+    let app = build_router_from_str(&script).await;
     let body = serde_json::json!({"id": 2, "name": "Bob", "email": "b@example.com"}).to_string();
     let req = Request::builder()
         .method("POST")
@@ -283,7 +283,7 @@ run:
     respond 201 "User added"
 "#
     );
-    let app = build_router_from_str(&script);
+    let app = build_router_from_str(&script).await;
     let body = serde_json::json!({"id": 1, "name": "Alice", "email": "a@example.com"}).to_string();
     let req = Request::builder()
         .method("POST")
